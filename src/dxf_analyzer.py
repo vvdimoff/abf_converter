@@ -36,85 +36,54 @@ class DXFAnalyzer:
         
         return self.layers_content
     
-    def _process_insert(self, entity, insert_offset=(0, 0)):
+    def _process_insert(self, entity, insert_offset=(0,0)):
         """Обрабатывает вставку блока"""
         layer = entity.dxf.layer
         block_name = entity.dxf.name
         block = self.doc.blocks[block_name]
         
-        # Инициализируем структуру для слоя, если её нет
+        # Инициализируем структуру для слоя
         if layer not in self.layers_content:
             self.layers_content[layer] = {
                 'standalone': {'circles': [], 'lines': set()},
                 'blocks': {}
             }
         
-        # Инициализируем структуру для блока, если её нет
-        if block_name not in self.layers_content[layer]['blocks']:
-            self.layers_content[layer]['blocks'][block_name] = {
-                'instances': [],
-                'circles': [],
-                'lines': set(),
-                'block_references': set(),
-                'xdata': {}  # Добавляем xdata
-            }
-        
-        # Сохраняем позицию вставки
+        # Получаем точку вставки с учетом смещения
         current_insert = (
             entity.dxf.insert.x + insert_offset[0],
             entity.dxf.insert.y + insert_offset[1]
         )
-        self.layers_content[layer]['blocks'][block_name]['instances'].append(current_insert)
-        
-        # Сохраняем xdata если есть
-        if hasattr(entity, 'xdata'):
-            self.layers_content[layer]['blocks'][block_name]['xdata'] = entity.xdata
         
         # Обрабатываем содержимое блока
         for e in block:
             if e.dxftype() == 'INSERT':
-                # Сохраняем ссылку на вложенный блок
-                ref_name = e.dxf.name
-                self.layers_content[layer]['blocks'][block_name]['block_references'].add(ref_name)
-                
-                # Проверяем атрибуты вставки
-                if hasattr(e, 'attribs'):
-                    for attrib in e.attribs:
-                        if attrib.dxf.tag == 'HOLE_TYPE':
-                            if 'special_refs' not in self.layers_content[layer]['blocks'][block_name]:
-                                self.layers_content[layer]['blocks'][block_name]['special_refs'] = set()
-                            self.layers_content[layer]['blocks'][block_name]['special_refs'].add(attrib.dxf.text)
-                
-                # роверяем расширенные данные
-                if hasattr(e, 'xdata') and e.xdata:
-                    for app_name, xdata_items in e.xdata.items():
-                        for item in xdata_items:
-                            if isinstance(item, str) and ('D' in item and '_DEPTH' in item):
-                                if 'special_refs' not in self.layers_content[layer]['blocks'][block_name]:
-                                    self.layers_content[layer]['blocks'][block_name]['special_refs'] = set()
-                                self.layers_content[layer]['blocks'][block_name]['special_refs'].add(item)
-                
-                # Обрабатываем вложенный блок
                 self._process_insert(e, current_insert)
-            elif e.dxftype() == 'ATTRIB':
-                # Сохраняем атрибуты блока
-                self.layers_content[layer]['blocks'][block_name]['block_references'].add(e.dxf.text)
-            elif e.dxftype() == 'LINE':
-                self._process_block_line(e, layer, block_name, current_insert)
             elif e.dxftype() == 'CIRCLE':
-                self._process_block_circle(e, layer, block_name, current_insert)
+                self._process_circle(e, layer, current_insert)
+            elif e.dxftype() == 'LINE':
+                self._process_line(e, layer, current_insert)
     
     def _process_circle(self, entity, layer, offset):
+        """Обрабатывает окружность"""
         center = (
             round(entity.dxf.center.x + offset[0], 1),
             round(entity.dxf.center.y + offset[1], 1)
         )
+        
+        if layer not in self.layers_content:
+            self.layers_content[layer] = {
+                'standalone': {'circles': [], 'lines': set()},
+                'blocks': {}
+            }
+        
         self.layers_content[layer]['standalone']['circles'].append({
             'center': center,
             'radius': round(entity.dxf.radius, 1)
         })
     
     def _process_line(self, entity, layer, offset):
+        """Обрабатывает линию"""
         start = (
             round(entity.dxf.start.x + offset[0], 1),
             round(entity.dxf.start.y + offset[1], 1)
@@ -123,7 +92,14 @@ class DXFAnalyzer:
             round(entity.dxf.end.x + offset[0], 1),
             round(entity.dxf.end.y + offset[1], 1)
         )
-        if start != end:
+        
+        if layer not in self.layers_content:
+            self.layers_content[layer] = {
+                'standalone': {'circles': [], 'lines': set()},
+                'blocks': {}
+            }
+        
+        if start != end:  # Пропускаем нулевые линии
             self.layers_content[layer]['standalone']['lines'].add((start, end))
     
     def _process_block_line(self, entity, layer, block_name, offset):
@@ -208,7 +184,7 @@ class DXFAnalyzer:
         # Анализ отверстий
         holes = []
         for layer_name, layer_content in self.layers_content.items():
-            # Проверяем блоки в слое
+            # Проверяем локи в слое
             for block_name, block in layer_content['blocks'].items():
                 if block_name.startswith('GROUP'):
                     # Если в блоке есть окружности, это может быть отверстие
@@ -231,7 +207,7 @@ class DXFAnalyzer:
             # Проверяем блоки в слое
             for block_name, block in layer_content['blocks'].items():
                 if block_name.startswith('GROUP'):
-                    # Если в блоке есть линии, это может быть паз
+                    # Если в боке есть линии, это может быть паз
                     if block['lines']:
                         lines_count = len(block['lines'])
                         if lines_count == 4:  # Типичный паз состоит из 4 линий
@@ -293,9 +269,9 @@ class DXFAnalyzer:
                     if block['circles']:
                         print(f"    │   │   │   ├── Circles ({len(block['circles'])})")
                         for circle in block['circles'][:2]:
-                            print(f"    │   │   │   │   ├── center=({circle['center'][0]:.1f}, {circle['center'][1]:.1f}), r={circle['radius']:.1f}")
+                            print(f"    │   │   │      ├── center=({circle['center'][0]:.1f}, {circle['center'][1]:.1f}), r={circle['radius']:.1f}")
                         if len(block['circles']) > 2:
-                            print(f"    │   │   │   │   └── ... and {len(block['circles'])-2} more")
+                            print(f"    │   │   │      └── ... and {len(block['circles'])-2} more")
                     
                     # Lines in block
                     if block['lines']:
@@ -353,7 +329,7 @@ class DXFAnalyzer:
                     print(f"  - {block}")
     
     def analyze_block_properties(self):
-        """Анализирует своства блоков и хх атрибуты"""
+        """Анализрует своства блоков и хх атрибуты"""
         print("\nDetailed Block Analysis:")
         
         for layer_name, layer_content in self.layers_content.items():
@@ -378,84 +354,264 @@ class DXFAnalyzer:
                             except:
                                 pass
                 
-                # Проверяем наличие вложенных блоков
+                # Проверяем нличие вложенных блоков
                 if 'block_references' in block:
                     print("    Block References:")
                     for ref in block['block_references']:
                         print(f"      - {ref}")
     
     def analyze_file_structure(self):
-        """Анализирует полную структуру DXF файла"""
-        print("\nDetailed Block Analysis:")
+        """Анализирует структуру DXF файла"""
+        print("\nАнализ структуры DXF файла:")
         
-        # Анализируем конкретные блоки с отверстиями
-        hole_blocks = ['GROUP2_1', 'GROUP9_1']
-        for block_name in hole_blocks:
-            if block_name in self.doc.blocks:
-                block = self.doc.blocks[block_name]
-                print(f"\nAnalyzing block: {block_name}")
+        # Аниз сов
+        for layer in self.doc.layers:
+            print(f"\nСлой: {layer.dxf.name}")
+            print(f"  Цвет: {layer.dxf.color}")
+            print(f"  Линтип: {layer.dxf.linetype}")
+        
+        # Анализ блоков
+        print("\nАнализ блоков:")
+        for block in self.doc.blocks:
+            print(f"\nБлок: {block.name}")
+            if block.name.startswith('_'):  # Пропускаем служебные блоки
+                continue
                 
-                # Анализируем каждую сущность в блоке
-                for entity in block:
-                    print(f"\n  Entity type: {entity.dxftype()}")
-                    
-                    # Выводим все атрибуты сущности
-                    if hasattr(entity, 'dxf'):
-                        print("  DXF attributes:")
-                        for attr_name in dir(entity.dxf):
-                            if not attr_name.startswith('_'):
-                                try:
-                                    value = getattr(entity.dxf, attr_name)
-                                    if not callable(value):
-                                        print(f"    {attr_name}: {value}")
-                                except:
-                                    pass
-                    
-                    # Проверяем на вложенные блоки
+            # Ищем родительский блок
+            print("  Родительский блок:", end=" ")
+            for parent in self.doc.blocks:
+                for entity in parent:
+                    if entity.dxftype() == 'INSERT' and entity.dxf.name == block.name:
+                        print(parent.name)
+                        break
+            
+            # нализируем содержимое блока
+            for entity in block:
+                if entity.dxftype() == 'INSERT':
+                    print(f"  Вставка блока: {entity.dxf.name}")
+                elif entity.dxftype() == 'LINE':
+                    print(f"  Линия: {entity.dxf.start} -> {entity.dxf.end}")
+        
+        # Поиск и анализ панелей
+        thickness_block = next(
+            (block for block in self.doc.blocks if block.name == 'THICKNESS_18'), 
+            None
+        )
+        
+        if thickness_block:
+            panel_blocks = [
+                entity for entity in thickness_block 
+                if entity.dxftype() == 'INSERT' and entity.dxf.name.startswith('_______')
+            ]
+            print(f"\nНайдено панелей: {len(panel_blocks)}")
+            
+            for panel in panel_blocks:
+                print(f"\nПанель: {panel.dxf.name}")
+                panel_block = self.doc.blocks[panel.dxf.name]
+                
+                # Получаем точку вставки панели
+                insert_point = (panel.dxf.insert.x, panel.dxf.insert.y)
+                
+                # Анализируем размеры панели
+                panel_dimensions = self._get_panel_dimensions(panel_block)
+                if panel_dimensions:
+                    print(f"  Размеры: {panel_dimensions[0]}x{panel_dimensions[1]} мм")
+                    print(f"  Точка вставки: ({insert_point[0]:.1f}, {insert_point[1]:.1f})")
+                
+                # Инициализируем структуру для элементов панели
+                panel_elements = {
+                    'holes': [],
+                    'grooves': [],
+                    'groups': set()
+                }
+                
+                # Собираем элементы панели
+                for entity in panel_block:
                     if entity.dxftype() == 'INSERT':
-                        print(f"  Referenced block: {entity.dxf.name}")
-                        # Анализируем атрибуты влоенного блока
-                        if hasattr(entity, 'attribs'):
-                            print("  Attributes:")
-                            for attrib in entity.attribs:
-                                print(f"    {attrib.dxf.tag}: {attrib.dxf.text}")
-                    
-                    # Проверяем на текст
-                    if entity.dxftype() in ['TEXT', 'MTEXT', 'ATTRIB']:
-                        print(f"  Text content: {entity.dxf.text}")
-                    
-                    # Проверяем на расширенные данные
-                    if hasattr(entity, 'xdata') and entity.xdata:
-                        print("  Extended Data:")
-                        for app_name, xdata in entity.xdata.items():
-                            print(f"    {app_name}: {xdata}")
-    
-    def _find_holes(self) -> List[Hole]:
-        """Находит отверстия в блоках GROUP* по слою окружности"""
-        holes = []
+                        if entity.dxf.name.startswith('GROUP'):
+                            panel_elements['groups'].add(entity.dxf.name)
+                            group_block = self.doc.blocks[entity.dxf.name]
+                            
+                            # Анализируем содержимое группы
+                            for e in group_block:
+                                if e.dxftype() == 'CIRCLE':
+                                    layer = e.dxf.layer
+                                    if 'DEPTH' in layer:
+                                        center = (
+                                            round(e.dxf.center.x + insert_point[0], 1),
+                                            round(e.dxf.center.y + insert_point[1], 1)
+                                        )
+                                        panel_elements['holes'].append({
+                                            'center': center,
+                                            'radius': round(e.dxf.radius, 1),
+                                            'layer': layer
+                                        })
+                                elif e.dxftype() == 'LINE' and e.dxf.layer == 'PAZ_DEPTH8_0':
+                                    start = (
+                                        round(e.dxf.start.x + insert_point[0], 1),
+                                        round(e.dxf.start.y + insert_point[1], 1)
+                                    )
+                                    end = (
+                                        round(e.dxf.end.x + insert_point[0], 1),
+                                        round(e.dxf.end.y + insert_point[1], 1)
+                                    )
+                                    panel_elements['grooves'].append((start, end))
+                
+                # Анализируем отверстия
+                holes_by_type = {}
+                for hole in panel_elements['holes']:
+                    hole_type = self._classify_hole(hole['layer'], hole['radius'])
+                    if hole_type not in holes_by_type:
+                        holes_by_type[hole_type] = []
+                    holes_by_type[hole_type].append(hole)
+                
+                if holes_by_type:
+                    print("  Отверстия по типам:")
+                    for hole_type, holes in holes_by_type.items():
+                        print(f"    {hole_type} ({len(holes)}):")
+                        for hole in holes:
+                            print(f"      - center={hole['center']}, r={hole['radius']}")
+                
+                if panel_elements['grooves']:
+                    print(f"  Пазы ({len(panel_elements['grooves'])}):")
+                    for groove in panel_elements['grooves']:
+                        print(f"    - {groove[0]} → {groove[1]}")
+                
+                if panel_elements['groups']:
+                    print(f"  группы и их содержимое:")
+                    for group_name in sorted(panel_elements['groups']):
+                        group_block = self.doc.blocks[group_name]
+                        print(f"    {group_name}:")
+                        
+                        # Подсчитываем элементы в группе
+                        circles = sum(1 for e in group_block if e.dxftype() == 'CIRCLE')
+                        lines = sum(1 for e in group_block if e.dxftype() == 'LINE')
+                        
+                        if circles:
+                            print(f"      - Окружностей: {circles}")
+                        if lines:
+                            print(f"      - Линий: {lines}")
+
+    def _get_panel_dimensions(self, panel_block):
+        """Определяет размеры панели по крайним точкам"""
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
         
-        for layer_content in self.layers_content.values():
-            for block_name, block in layer_content.get('blocks', {}).items():
-                if not block_name.startswith('GROUP'):
-                    continue
+        for entity in panel_block:
+            if entity.dxftype() == 'LINE':
+                points = [(entity.dxf.start.x, entity.dxf.start.y),
+                         (entity.dxf.end.x, entity.dxf.end.y)]
+                for x, y in points:
+                    min_x = min(min_x, x)
+                    max_x = max(max_x, x)
+                    min_y = min(min_y, y)
+                    max_y = max(max_y, y)
+        
+        if min_x != float('inf'):
+            width = round(max_x - min_x)
+            height = round(max_y - min_y)
+            return width, height
+        return None
+
+    def _classify_hole(self, layer, radius):
+        """Классифицирует отверстие по слою и радиусу"""
+        if 'D8_0_DEPTHF' in layer:
+            return 'Сквозное отверстие D8'
+        elif 'D5_0_DEPTH8_0' in layer:
+            return 'Отверстие D5 глубиной 8мм'
+        else:
+            return f'Отверстие D{round(radius*2)} ({layer})'
+
+    def _analyze_element_positions(self, holes, grooves):
+        """Анализирует взаимное расположение элементов"""
+        results = []
+        
+        # Анализ расположения отверстий
+        if len(holes) > 1:
+            for i in range(len(holes)-1):
+                for j in range(i+1, len(holes)):
+                    h1, h2 = holes[i], holes[j]
+                    dx = h2['center'][0] - h1['center'][0]
+                    dy = h2['center'][1] - h1['center'][1]
+                    distance = round(((dx**2 + dy**2)**0.5), 1)
                     
-                # Проверяем есть ли окружности в блоке
-                if block['circles']:
-                    for circle in block['circles']:
-                        # Получаем слой окружности
-                        circle_layer = circle.get('layer', '')
-                        if circle_layer.startswith('D') and ('DEPTH' in circle_layer):
-                            try:
-                                # Парсим диаметр и глубину из имени слоя
-                                diameter = float(circle_layer.split('D')[1].split('_')[0].replace('_', '.'))
-                                depth = "through" if 'DEPTHF' in circle_layer else float(circle_layer.split('DEPTH')[1].replace('_', '.'))
+                    if distance < 50:  # Близко расположенные отверстия
+                        results.append(
+                            f"Отверстия на расстоянии {distance}мм: "
+                            f"({h1['center']}) и ({h2['center']})"
+                        )
+        
+        # Анализ пазов
+        if grooves:
+            # Находим параллельные пазы
+            for i in range(len(grooves)-1):
+                for j in range(i+1, len(grooves)):
+                    g1, g2 = grooves[i], grooves[j]
+                    if self._are_parallel(g1, g2):
+                        results.append(
+                            f"Параллельные пазы: {g1} и {g2}"
+                        )
+        
+        return results
+
+    def get_panels_data(self):
+        """Подготавливает данные о панелях для panel_builder"""
+        panels_data = []
+        
+        thickness_block = next(
+            (block for block in self.doc.blocks if block.name == 'THICKNESS_18'), 
+            None
+        )
+        
+        if thickness_block:
+            panel_blocks = [
+                entity for entity in thickness_block 
+                if entity.dxftype() == 'INSERT' and entity.dxf.name.startswith('_______')
+            ]
+            
+            for panel in panel_blocks:
+                panel_block = self.doc.blocks[panel.dxf.name]
+                dimensions = self._get_panel_dimensions(panel_block)
+                origin_point = (round(panel.dxf.insert.x, 1), round(panel.dxf.insert.y, 1))
+                
+                panel_data = {
+                    "name": panel.dxf.name,
+                    "width": dimensions[0] if dimensions else None,
+                    "height": dimensions[1] if dimensions else None,
+                    "origin_point": origin_point,
+                    "holes": [],
+                    "grooves": []
+                }
+                
+                # Собираем отверстия и пазы из групп
+                for entity in panel_block:
+                    if entity.dxftype() == 'INSERT' and entity.dxf.name.startswith('GROUP'):
+                        group_block = self.doc.blocks[entity.dxf.name]
+                        group_insert = (entity.dxf.insert.x, entity.dxf.insert.y)
+                        
+                        for e in group_block:
+                            if e.dxftype() == 'CIRCLE' and 'DEPTH' in e.dxf.layer:
+                                # Абсолютные координаты = координаты элемента + вставка группы + вставка панели
+                                center_x = round(e.dxf.center.x + group_insert[0] + origin_point[0], 1)
+                                center_y = round(e.dxf.center.y + group_insert[1] + origin_point[1], 1)
                                 
-                                holes.append(Hole(
-                                    center=circle['center'],
-                                    diameter=diameter,
-                                    depth=depth
-                                ))
-                            except (ValueError, IndexError):
-                                print(f"Warning: Could not parse hole layer: {circle_layer}")
+                                panel_data["holes"].append({
+                                    "center": (center_x, center_y),
+                                    "radius": round(e.dxf.radius, 1),
+                                    "layer": e.dxf.layer
+                                })
+                            elif e.dxftype() == 'LINE' and e.dxf.layer == 'PAZ_DEPTH8_0':
+                                # Абсолютные координаты для пазов
+                                start_x = round(e.dxf.start.x + group_insert[0] + origin_point[0], 1)
+                                start_y = round(e.dxf.start.y + group_insert[1] + origin_point[1], 1)
+                                end_x = round(e.dxf.end.x + group_insert[0] + origin_point[0], 1)
+                                end_y = round(e.dxf.end.y + group_insert[1] + origin_point[1], 1)
+                                
+                                panel_data["grooves"].append({
+                                    "start": (start_x, start_y),
+                                    "end": (end_x, end_y)
+                                })
+                
+                panels_data.append(panel_data)
         
-        return holes
+        return panels_data

@@ -1,31 +1,35 @@
+import sys
+import argparse
 from dxf_analyzer import DXFAnalyzer
 from panel_builder import PanelBuilder
-import json
 
 def main():
-    filename = "panel2.dxf"
+    # Создаем парсер аргументов
+    parser = argparse.ArgumentParser(description='DXF файл анализатор и конвертер')
+    parser.add_argument('file', help='Путь к DXF файлу')
+    parser.add_argument('-a', '--analyze', action='store_true', 
+                       help='Показать подробный анализ файла')
     
-    # Анализируем DXF файл
-    analyzer = DXFAnalyzer(filename)
-    analyzer.analyze_file_structure()
-    dxf_data = analyzer.analyze()
+    args = parser.parse_args()
     
-    # Выводим иерархию
-    analyzer.print_hierarchy()
-    
-    # Выводим анализ специальных слоев
-    analyzer.analyze_special_layers()
-    
-    # Добавляем анализ свойств
-    analyzer.analyze_block_properties()
-    
-    # Создаем панель
-    builder = PanelBuilder(dxf_data)
-    panel = builder.build()
-    
-    # Выводим JSON
-    print("\nJSON представление панели:")
-    print(json.dumps(panel.to_dict(), indent=2, ensure_ascii=False))
+    try:
+        # Инициализируем анализатор
+        analyzer = DXFAnalyzer(args.file)
+        
+        if args.analyze:
+            # Выводим подробный анализ
+            analyzer.analyze_file_structure()
+        else:
+            # Получаем данные о панелях
+            panels_data = analyzer.get_panels_data()
+            
+            # Создаем и выводим JSON
+            builder = PanelBuilder(panels_data)
+            print(builder.to_json())
+            
+    except Exception as e:
+        print(f"Ошибка при обработке файла: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
