@@ -5,9 +5,35 @@ from geometry import Hole, Groove
 class DxfReader:
     STANDARD_OFFSET = 8.415  # Стандартный отступ кромки в мм
 
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, debug: bool = False):
+        """Инициализация чтения DXF файла"""
         self.filename = filename
-        self.doc = None
+        self.doc = ezdxf.readfile(filename)
+        self.debug = debug
+        if self.debug:
+            print(f"\nОткрываем файл: {filename}")
+            self._print_structure()  # Выводим структуру файла
+
+    def _print_structure(self):
+        """Выводит структуру DXF файла"""
+        print("\nСтруктура DXF файла:")
+        for block in self.doc.blocks:
+            print(f"Блок: {block.name}")
+            for entity in block:
+                print(f"  - {entity.dxftype()} [layer: {entity.dxf.layer}]")
+                if entity.dxftype() == 'INSERT':
+                    try:
+                        nested_block = self.doc.blocks[entity.dxf.name]
+                        print(f"    Вложенный блок {entity.dxf.name}:")
+                        for e in nested_block:
+                            print(f"      - {e.dxftype()} [layer: {e.dxf.layer}]")
+                    except Exception as err:
+                        print(f"    Ошибка при доступе к блоку: {err}")
+
+    def _debug_print(self, *args, **kwargs):
+        """Вывод отладочной информации"""
+        if self.debug:
+            print("DEBUG:", *args, **kwargs)
 
     def read(self) -> List[Dict]:
         """Читает DXF файл и возвращает данные всех панелей"""
@@ -17,16 +43,27 @@ class DxfReader:
     def get_panels_data(self) -> List[Dict]:
         """Получает данные о всех панелях"""
         panels_data = []
-        thickness_block = next(
-            (block for block in self.doc.blocks if block.name == 'THICKNESS_18'), 
-            None
-        )
+        panel_blocks = set()  # для уникальных блоков
         
-        if thickness_block:
-            for panel in self._get_panel_blocks(thickness_block):
-                panel_data = self._analyze_panel(panel)
-                if panel_data:
-                    panels_data.append(panel_data)
+        # Соираем все блои-панели и их INSERT'ы из modelspace
+        for entity in self.doc.modelspace():
+            if entity.dxftype() == 'INSERT':
+                block = self.doc.blocks[entity.dxf.name]
+                for e in block:
+                    if e.dxftype() == 'INSERT' and (
+                        e.dxf.name.startswith('_______') or 
+                        e.dxf.name.startswith('______')
+                    ):
+                        print(f"DEBUG: Found panel block: {e.dxf.name}")
+                        panel_blocks.add(e)  # сохраняем сам INSERT
+        
+        # Анализируем каждую панель
+        for panel in panel_blocks:
+            print(f"DEBUG: Analyzing panel: {panel.dxf.name}")
+            print(f"DEBUG: Insert point: ({panel.dxf.insert.x}, {panel.dxf.insert.y})")
+            panel_data = self._analyze_panel(panel)
+            if panel_data:
+                panels_data.append(panel_data)
         
         return panels_data
 
@@ -38,26 +75,27 @@ class DxfReader:
         ]
 
     def _analyze_panel(self, panel) -> Dict:
-        """Анализирует отдельную панель"""
+        """Анализирует панель и собирает все данные"""
         panel_block = self.doc.blocks[panel.dxf.name]
-        dimensions = self._get_panel_dimensions(panel_block)
-        origin_point = (round(panel.dxf.insert.x, 1), round(panel.dxf.insert.y, 1))
         
-        width = dimensions[0] if dimensions else None
-        height = dimensions[1] if dimensions else None
+        # Сначала находим контур
+        contour = self._get_panel_contour(panel_block)
+        
+        # Затем ищем все вырезы
+        cutouts = self._get_cutouts(panel_block, contour)
         
         return {
             "name": panel.dxf.name,
             "size": {
-                "width": width,
-                "height": height,
+                "width": contour['width'],
+                "height": contour['height'],
                 "thickness": 18.0
             },
-            "origin_point": origin_point,
-            "holes": self._get_holes(panel_block, origin_point) or [],
-            "grooves": self._get_grooves(panel_block, origin_point) or [],
-            "edges": self._get_edges(panel_block, origin_point, width, height) or [],
-            "cutouts": self._get_cutouts(panel_block, origin_point) or []
+            "origin_point": (round(panel.dxf.insert.x, 1), round(panel.dxf.insert.y, 1)),
+            "cutouts": cutouts,
+            "holes": [],  # Добавляем пустые списки для остальных элементов
+            "grooves": [],
+            "edges": []
         }
 
     def _get_holes(self, panel_block, origin_point) -> List[Hole]:
@@ -95,60 +133,47 @@ class DxfReader:
         return 0.0
 
     def _print_file_structure(self):
-        """Выводит структуру DXF файла"""
-        # Анализ слоев
-        for layer in self.doc.layers:
-            print(f"\n[{layer.dxf.name}]")
-            blocks_in_layer = []
+        """Выводит древовидную структуру DXF файла"""
+        print("\nСтруктура DXF файла:")
+        
+        # Собираем уникальные блоки по слоям
+        layers_blocks = {}
+        
+        for block in self.doc.blocks:
+            # Пропускаем служебные блоки
+            if block.name.startswith('*'): continue
             
-            # Анализ блоков в слое
-            for block in self.doc.blocks:
-                if block.name.startswith('_'):  # Пропускаем служебные блоки
-                    continue
+            # Определяем слой блока по его содержимому
+            block_layer = '0'  # слой по уолчанию
+            for entity in block:
+                if entity.dxf.layer != '0':
+                    block_layer = entity.dxf.layer
+                    break
+            
+            if block_layer not in layers_blocks:
+                layers_blocks[block_layer] = set()
+            layers_blocks[block_layer].add(block.name)
+        
+        # Выводим структуру
+        for layer, blocks in layers_blocks.items():
+            print(f"\n├── [{layer}]")
+            for block_name in sorted(blocks):
+                block = self.doc.blocks[block_name]
+                print(f"│   └── Block {block_name}")
                 
-                has_entities = False
-                instances = []
-                lines = []
-                
-                # Анализ содержимого блока
+                # Показываем типы элементов в блоке (без повторов)
+                entities = set()
                 for entity in block:
-                    if entity.dxf.layer == layer.dxf.name:
-                        has_entities = True
-                        if entity.dxftype() == 'INSERT':
-                            instances.append((
-                                round(entity.dxf.insert.x, 1),
-                                round(entity.dxf.insert.y, 1)
-                            ))
-                        elif entity.dxftype() == 'LINE':
-                            lines.append((
-                                (round(entity.dxf.start.x, 1), round(entity.dxf.start.y, 1)),
-                                (round(entity.dxf.end.x, 1), round(entity.dxf.end.y, 1))
-                            ))
+                    if entity.dxftype() == 'LINE':
+                        entities.add('Lines')
+                    elif entity.dxftype() == 'INSERT':
+                        entities.add(f"Insert: {entity.dxf.name}")
+                    else:
+                        entities.add(entity.dxftype())
                 
-                if has_entities:
-                    blocks_in_layer.append({
-                        'name': block.name,
-                        'instances': instances,
-                        'lines': lines
-                    })
-            
-            if blocks_in_layer:
-                print(f"  Blocks: {len(blocks_in_layer)}")
-                for block in blocks_in_layer:
-                    print(f"    Block {block['name']}:")
-                    if block['instances']:
-                        print(f"      Instances: {len(block['instances'])}")
-                        for pos in block['instances'][:2]:  # Показываем только первые 2
-                            print(f"        at ({pos[0]}, {pos[1]})")
-                        if len(block['instances']) > 2:
-                            print(f"        ... and {len(block['instances'])-2} more")
-                    
-                    if block['lines']:
-                        print(f"      Lines: {len(block['lines'])}")
-                        for start, end in block['lines'][:2]:  # Показываем только первые 2
-                            print(f"        {start} → {end}")
-                        if len(block['lines']) > 2:
-                            print(f"        ... and {len(block['lines'])-2} more lines")
+                if entities:
+                    for entity in sorted(entities):
+                        print(f"│       └── {entity}")
 
     def _analyze_special_elements(self, panel_block, origin_point):
         """Анализирует специальные элементы панели (отверстия, пазы)"""
@@ -232,15 +257,9 @@ class DxfReader:
         return 0.0
 
     def analyze_and_log(self):
-        """Выводит подробный анализ файла"""
-        self.doc = ezdxf.readfile(self.filename)
-        
-        # Выводим структуру файла
-        print("\nСтруктура DXF файла:")
-        self._print_file_structure()
-        
-        # Анализируем панели
+        """Анализирует и выводит информацию о панелях"""
         panels_data = self.get_panels_data()
+        
         print(f"\nНайдено панелей: {len(panels_data)}")
         
         for panel in panels_data:
@@ -248,68 +267,132 @@ class DxfReader:
             print(f"  Размеры: {panel['size']['width']}x{panel['size']['height']}x{panel['size']['thickness']} мм")
             print(f"  Точка вставки: {panel['origin_point']}")
             
-            # Выводим информацию об элементах
-            if panel['holes']:
-                print(f"  Отверстия ({len(panel['holes'])}):")
-                for hole in panel['holes']:
-                    print(f"    - D{hole['diameter']} мм, глубина {hole['depth']} мм в точке {hole['center']}")
-            
-            if panel['grooves']:
-                print(f"  Пазы ({len(panel['grooves'])}):")
-                for groove in panel['grooves']:
-                    print(f"    - {groove['width']}x{groove['depth']} мм от {groove['start']} до {groove['end']}")
-            
-            if panel['edges']:
-                print(f"  Кромки ({len(panel['edges'])}):")
-                for edge in panel['edges']:
-                    print(f"    - Толщина {edge['thickness']} мм")
+            if panel.get('cutouts'):
+                print("  Вырезы:")
+                for cutout in panel['cutouts']:
+                    edge_info = f" ({cutout['edge']})" if 'edge' in cutout else ""
+                    print(f"    - {cutout['type']}{edge_info}:")
+                    print(f"      Размер: {cutout['size']['x']}x{cutout['size']['y']} мм")
+                    print(f"      Позиция: {cutout['position']['x']}, {cutout['position']['y']}")
 
-    def _get_edges(self, panel_block, origin_point, panel_width, panel_height):
-        """Получает данные о кромках панели"""
+    def _get_edges(self, panel_block) -> List[Dict]:
+        """Получает данные о кромках"""
         edges = []
         
+        self._debug_print("\nПоиск кромок:")
+        
+        # Ищем блок GROUP34_1 (там обычно кромки)
         for entity in panel_block:
-            if entity.dxftype() == 'INSERT' and entity.dxf.name.startswith('GROUP'):
-                group_block = self.doc.blocks[entity.dxf.name]
-                group_insert = (entity.dxf.insert.x, entity.dxf.insert.y)
+            if entity.dxftype() == 'INSERT' and entity.dxf.name == 'GROUP34_1':
+                block = self.doc.blocks[entity.dxf.name]
                 
-                for e in group_block:
-                    if e.dxf.layer == 'ABF_EDGEBANDING' and e.dxftype() == 'POLYLINE':
-                        vertices = list(e.vertices)
-                        if len(vertices) == 4:  # треугольник (замкнутый)
-                            # Абсолютные координаты
-                            tip_x = round(vertices[0].dxf.location[0] + group_insert[0] + origin_point[0], 1)
-                            tip_y = round(vertices[0].dxf.location[1] + group_insert[1] + origin_point[1], 1)
-                            base1_x = round(vertices[1].dxf.location[0] + group_insert[0] + origin_point[0], 1)
-                            base1_y = round(vertices[1].dxf.location[1] + group_insert[1] + origin_point[1], 1)
-                            base2_x = round(vertices[2].dxf.location[0] + group_insert[0] + origin_point[0], 1)
-                            base2_y = round(vertices[2].dxf.location[1] + group_insert[1] + origin_point[1], 1)
+                for e in block:
+                    if e.dxf.layer == 'ABF_EDGEBANDING':
+                        if e.dxftype() == 'POLYLINE':
+                            points = []
+                            for vertex in e.vertices:
+                                x = round(abs(vertex.dxf.location[0]), 2)
+                                y = round(vertex.dxf.location[1], 2)
+                                points.append((x, y))
                             
-                            # Определяем сторону панели по абсолютным координатам
-                            # Для отрицательных координат используем abs()
-                            x, y = abs(tip_x), tip_y
-                            if abs(x - panel_width) < 20:  # правый край
-                                side = "right"
-                            elif abs(x) < 20:  # левый край
-                                side = "left"
-                            elif abs(y) < 20:  # нижний край
-                                side = "bottom"
-                            elif abs(y - panel_height) < 20:  # верхний край
-                                side = "top"
-                            else:
-                                side = "unknown"
-                            
-                            edges.append({
-                                'thickness': 1.0,
-                                'side': side,
-                                'coordinates': {
-                                    'tip': (tip_x, tip_y),
-                                    'base1': (base1_x, base1_y),
-                                    'base2': (base2_x, base2_y)
+                            if len(points) >= 2:
+                                edge = {
+                                    'start': points[0],
+                                    'end': points[-1],
+                                    'points': points
                                 }
-                            })
+                                edges.append(edge)
+                                self._debug_print(f"Найдена кромка: {edge}")
         
         return edges
+
+    def _get_cutouts(self, panel_block, contour) -> List[Dict]:
+        """Находит все вырезы на панели"""
+        cutouts = []
+        tolerance = 1.0  # допуск для определения края
+        min_size = 5.0   # минимальный размер выреза
+        
+        self._debug_print("\nПоиск вырезов в панели:")
+        self._debug_print(f"Размеры контура: {contour['width']}x{contour['height']}")
+        
+        # Временное хранилище для проверки дубликатов
+        seen_cutouts = set()
+        
+        for entity in panel_block:
+            if entity.dxftype() == 'INSERT':
+                try:
+                    block = self.doc.blocks[entity.dxf.name]
+                    for e in block:
+                        if e.dxf.layer == 'ABF_EDGEBANDING':
+                            points = []
+                            
+                            # Получаем точки в зависимости от типа полилинии
+                            if hasattr(e, 'vertices'):
+                                for vertex in e.vertices:
+                                    # Нормализуем координаты относительно панели
+                                    x = round(abs(vertex.dxf.location[0] + entity.dxf.insert.x), 2)
+                                    y = round(vertex.dxf.location[1] + entity.dxf.insert.y, 2)
+                                    points.append((x, y))
+                            elif hasattr(e, 'get_points'):
+                                for point in e.get_points():
+                                    x = round(abs(point[0] + entity.dxf.insert.x), 2)
+                                    y = round(point[1] + entity.dxf.insert.y, 2)
+                                    points.append((x, y))
+                            
+                            if points:
+                                # Определяем размеры
+                                x_coords = [p[0] for p in points]
+                                y_coords = [p[1] for p in points]
+                                min_x, max_x = min(x_coords), max(x_coords)
+                                min_y, max_y = min(y_coords), max(y_coords)
+                                size_x = round(max_x - min_x, 2)
+                                size_y = round(max_y - min_y, 2)
+                                
+                                # Проверяем размер
+                                if size_x > min_size or size_y > min_size:
+                                    # Нормализуем координаты относительно размеров панели
+                                    normalized_x = round(min_x - contour.get('origin_x', 0), 2)
+                                    normalized_y = round(min_y - contour.get('origin_y', 0), 2)
+                                    
+                                    # Определяем тип выреза
+                                    is_edge = (
+                                        normalized_x <= tolerance or  # левый край
+                                        normalized_x + size_x >= contour['width'] - tolerance or  # правый край
+                                        normalized_y <= tolerance or  # нижний край
+                                        normalized_y + size_y >= contour['height'] - tolerance  # верхний край
+                                    )
+                                    
+                                    # Создаем ключ для проверки дубликатов
+                                    cutout_key = f"{size_x}_{size_y}_{normalized_x}_{normalized_y}"
+                                    
+                                    if cutout_key not in seen_cutouts:
+                                        cutout = {
+                                            'type': 'edge' if is_edge else 'inner',
+                                            'size': {'x': size_x, 'y': size_y},
+                                            'position': {
+                                                'x': normalized_x,
+                                                'y': normalized_y
+                                            }
+                                        }
+                                        
+                                        # Определяем положение для краевых вырезов
+                                        if is_edge:
+                                            if normalized_x <= tolerance:
+                                                cutout['edge'] = 'left'
+                                            elif normalized_x + size_x >= contour['width'] - tolerance:
+                                                cutout['edge'] = 'right'
+                                            elif normalized_y <= tolerance:
+                                                cutout['edge'] = 'bottom'
+                                            else:
+                                                cutout['edge'] = 'top'
+                                        
+                                        cutouts.append(cutout)
+                                        seen_cutouts.add(cutout_key)
+                
+                except Exception as err:
+                    self._debug_print(f"Ошибка при обработке блока: {err}")
+        
+        return cutouts
 
     def _get_panel_dimensions(self, panel_block) -> Tuple[float, float]:
         """Определяет размеры панели по крайним точкам"""
@@ -352,14 +435,175 @@ class DxfReader:
                             start=(start_x, start_y),
                             end=(end_x, end_y),
                             width=8.0,  # стандартная ширина паза
-                            depth=8.0   # стандартная глубина паза
+                            depth=8.0   # стандатная глубина паза
                         ))
         
         return grooves
 
-    def _get_cutouts(self, panel_block, origin_point) -> List[Dict]:
-        """Получает данные о вырезах панели"""
-        # Пока возвращаем пустой список, реализацию добавим позже
-        return []
+    def _get_edge_cutouts(self, panel_block, panel_outline) -> List[Dict]:
+        """Находит вырезы по краям панели"""
+        cutouts = []
+        tolerance = 0.1  # допуск для соединения линий
+        
+        # Собираем все короткие линии
+        short_lines = []
+        for entity in panel_block:
+            if entity.dxftype() == 'LINE':
+                start = (round(abs(entity.dxf.start[0]), 2), round(entity.dxf.start[1], 2))
+                end = (round(abs(entity.dxf.end[0]), 2), round(entity.dxf.end[1], 2))
+                length = ((end[0]-start[0])**2 + (end[1]-start[1])**2)**0.5
+                
+                # Если линия короче основных сторон панели
+                if length < min([line['length'] for line in panel_outline]):
+                    short_lines.append({'start': start, 'end': end, 'length': length})
+        
+        # Объединяем поледовательные линии
+        connected_lines = []
+        current_line = None
+        
+        for line in sorted(short_lines, key=lambda x: (x['start'][0], x['start'][1])):
+            if not current_line:
+                current_line = line
+                continue
+            
+            # Если конец текущей линии совпадает с началом следующей
+            if (abs(current_line['end'][0] - line['start'][0]) <= tolerance and
+                abs(current_line['end'][1] - line['start'][1]) <= tolerance):
+                # Объединяем линии
+                current_line = {
+                    'start': current_line['start'],
+                    'end': line['end'],
+                    'length': current_line['length'] + line['length']
+                }
+            else:
+                connected_lines.append(current_line)
+                current_line = line
+        
+        if current_line:
+            connected_lines.append(current_line)
+        
+        # Определяем радиусы скругления
+        for i in range(len(connected_lines)-1):
+            line1 = connected_lines[i]
+            line2 = connected_lines[i+1]
+            
+            # Если линии перпендикулярны
+            v1 = (line1['end'][0]-line1['start'][0], line1['end'][1]-line1['start'][1])
+            v2 = (line2['end'][0]-line2['start'][0], line2['end'][1]-line2['start'][1])
+            if abs(v1[0]*v2[0] + v1[1]*v2[1]) <= tolerance:  # скалярное произведение близко к 0
+                radius = min(line1['length'], line2['length']) / 2
+                cutouts.append({
+                    'type': 'edge',
+                    'start': line1['start'],
+                    'corner': line1['end'],
+                    'end': line2['end'],
+                    'radius': round(radius, 2)
+                })
+        
+        return cutouts
 
-    # ... остальные вспомогательные методы (_get_holes, _get_grooves, _get_edges, etc.)
+    def _get_panel_outline(self, panel_block) -> List[List[float]]:
+        """Находит осноной прямоугольник панели по самым длинным линиям"""
+        lines = []
+        
+        for entity in panel_block:
+            if entity.dxftype() == 'LINE':
+                start = (round(abs(entity.dxf.start[0]), 2), round(entity.dxf.start[1], 2))
+                end = (round(abs(entity.dxf.end[0]), 2), round(entity.dxf.end[1], 2))
+                length = ((end[0]-start[0])**2 + (end[1]-start[1])**2)**0.5
+                lines.append({'start': start, 'end': end, 'length': length})
+        
+        # Сортируем по длине и берем 4 самые длинные линии
+        longest_lines = sorted(lines, key=lambda x: x['length'], reverse=True)[:4]
+        return longest_lines
+
+    def _get_inner_cutouts(self, panel_block, panel_outline) -> List[Dict]:
+        """Находит вырезы внутри панели"""
+        cutouts = []
+        
+        # Находим замкнутые полилинии внутри панели
+        for entity in panel_block:
+            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
+                points = []
+                if hasattr(entity, 'vertices'):
+                    points = [(round(abs(v.dxf.location[0]), 2), round(v.dxf.location[1], 2)) 
+                             for v in entity.vertices]
+                elif hasattr(entity, 'get_points'):
+                    points = [(round(abs(p[0]), 2), round(p[1], 2)) 
+                             for p in entity.get_points()]
+                
+                if points and len(points) > 2:
+                    # Проверяем, что все точки внутри панели
+                    panel_bounds = {
+                        'min_x': min(l['start'][0] for l in panel_outline),
+                        'max_x': max(l['end'][0] for l in panel_outline),
+                        'min_y': min(l['start'][1] for l in panel_outline),
+                        'max_y': max(l['end'][1] for l in panel_outline)
+                    }
+                    
+                    is_inner = all(
+                        panel_bounds['min_x'] < p[0] < panel_bounds['max_x'] and
+                        panel_bounds['min_y'] < p[1] < panel_bounds['max_y']
+                        for p in points
+                    )
+                    
+                    if is_inner:
+                        cutouts.append({
+                            'type': 'inner',
+                            'points': points
+                        })
+        
+        return cutouts
+
+    def _get_panel_contour(self, panel_block) -> Dict:
+        """Находит основной контур панели"""
+        lines = []
+        
+        self._debug_print("\nПоиск контура панели:")
+        
+        # Ищем блок с контуром (обычно в GROUP33_1 в слое ABF_CUTTINGLINES)
+        for entity in panel_block:
+            if entity.dxftype() == 'INSERT':
+                self._debug_print(f"Проверяем блок: {entity.dxf.name}")
+                block = self.doc.blocks[entity.dxf.name]
+                
+                for e in block:
+                    self._debug_print(f"Сущность: {e.dxftype()} в слое {e.dxf.layer}")
+                    
+                    # Ищем в слое ABF_CUTTINGLINES
+                    if e.dxf.layer == 'ABF_CUTTINGLINES':
+                        if e.dxftype() == 'POLYLINE':
+                            self._debug_print("Найдена полилиния контура")
+                            # Собираем все точки полилинии
+                            points = []
+                            for vertex in e.vertices:
+                                x = round(abs(vertex.dxf.location[0]), 2)
+                                y = round(vertex.dxf.location[1], 2)
+                                points.append((x, y))
+                            
+                            # Создаем линии из точек
+                            for i in range(len(points)):
+                                start = points[i]
+                                end = points[(i + 1) % len(points)]  # закольцовываем на первую точку
+                                length = ((end[0]-start[0])**2 + (end[1]-start[1])**2)**0.5
+                                lines.append({
+                                    'start': start,
+                                    'end': end,
+                                    'length': round(length, 2)
+                                })
+                                self._debug_print(f"Добавлена линия контура: {start} -> {end}")
+        
+        if not lines:
+            raise ValueError("Не найден контур панели!")
+            
+        # Находим размеры панели
+        x_coords = [p[0] for line in lines for p in [line['start'], line['end']]]
+        y_coords = [p[1] for line in lines for p in [line['start'], line['end']]]
+        
+        width = round(max(x_coords) - min(x_coords), 2)
+        height = round(max(y_coords) - min(y_coords), 2)
+        
+        self._debug_print(f"Найден контур: {width}x{height}")
+        return {'width': width, 'height': height, 'lines': lines}
+
+    # ... остальые вспомогательные методы (_get_holes, _get_grooves, _get_edges, etc.)

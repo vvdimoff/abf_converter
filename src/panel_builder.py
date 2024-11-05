@@ -72,31 +72,41 @@ class PanelBuilder:
     def build(self) -> Dict:
         """Создает JSON-представление панели из данных"""
         panel = {
-            'size': self.panel_data['size'],
+            'size': {
+                'width': round(self.panel_data['size']['width'], 2),
+                'height': round(self.panel_data['size']['height'], 2),
+                'thickness': self.panel_data['size']['thickness']
+            },
             'edges': [],
             'holes': [],
             'grooves': [],
+            'cutouts': [],
             'corners': []
         }
 
         # Добавляем кромки
         for edge in self.panel_data['edges']:
             panel['edges'].append({
-                'thickness': edge['thickness'],
+                'thickness': round(edge['thickness'], 2),
                 'side': edge['side'],
                 'position': {
-                    'tip': [abs(edge['coordinates']['tip'][0]), edge['coordinates']['tip'][1]],
-                    'base1': [abs(edge['coordinates']['base1'][0]), edge['coordinates']['base1'][1]],
-                    'base2': [abs(edge['coordinates']['base2'][0]), edge['coordinates']['base2'][1]]
+                    'start': [round(abs(edge['coordinates']['start'][0]), 2), 
+                             round(edge['coordinates']['start'][1], 2)],
+                    'end': [round(abs(edge['coordinates']['end'][0]), 2), 
+                           round(edge['coordinates']['end'][1], 2)]
                 }
             })
 
-        # Добавляем отверстия
-        for hole in self.panel_data['holes']:
-            panel['holes'].append(hole.to_dict())
-
-        # Добавляем пазы
-        for groove in self.panel_data['grooves']:
-            panel['grooves'].append(groove.to_dict())
+        # Добавляем вырезы
+        for cutout in self.panel_data.get('cutouts', []):
+            if cutout['type'] == 'L':
+                panel['cutouts'].append({
+                    'type': 'L',
+                    'position': cutout['position'],
+                    'size': {
+                        'x': round(cutout['size_x'], 2),
+                        'y': round(cutout['size_y'], 2)
+                    }
+                })
 
         return panel
