@@ -66,51 +66,37 @@ class Panel:
         }
 
 class PanelBuilder:
-    def __init__(self, panels_data):
-        self.panels_data = panels_data
+    def __init__(self, panel_data: Dict):
+        self.panel_data = panel_data
 
-    def to_json(self):
-        """Преобразует данные панелей в JSON строку"""
-        result = {
-            "panels": []
+    def build(self) -> Dict:
+        """Создает JSON-представление панели из данных"""
+        panel = {
+            'size': self.panel_data['size'],
+            'edges': [],
+            'holes': [],
+            'grooves': [],
+            'corners': []
         }
-        
-        for panel in self.panels_data:
-            panel_json = {
-                "name": panel["name"],
-                "dimensions": {
-                    "width": panel["width"],
-                    "height": panel["height"]
-                },
-                "origin_point": {
-                    "x": panel["origin_point"][0],
-                    "y": panel["origin_point"][1]
-                },
-                "elements": {
-                    "holes": [
-                        {
-                            "center": {
-                                "x": hole["center"][0],
-                                "y": hole["center"][1]
-                            },
-                            "radius": hole["radius"],
-                            "type": hole["layer"]
-                        } for hole in panel["holes"]
-                    ],
-                    "grooves": [
-                        {
-                            "start": {
-                                "x": groove["start"][0],
-                                "y": groove["start"][1]
-                            },
-                            "end": {
-                                "x": groove["end"][0],
-                                "y": groove["end"][1]
-                            }
-                        } for groove in panel["grooves"]
-                    ]
+
+        # Добавляем кромки
+        for edge in self.panel_data['edges']:
+            panel['edges'].append({
+                'thickness': edge['thickness'],
+                'side': edge['side'],
+                'position': {
+                    'tip': [abs(edge['coordinates']['tip'][0]), edge['coordinates']['tip'][1]],
+                    'base1': [abs(edge['coordinates']['base1'][0]), edge['coordinates']['base1'][1]],
+                    'base2': [abs(edge['coordinates']['base2'][0]), edge['coordinates']['base2'][1]]
                 }
-            }
-            result["panels"].append(panel_json)
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+            })
+
+        # Добавляем отверстия
+        for hole in self.panel_data['holes']:
+            panel['holes'].append(hole.to_dict())
+
+        # Добавляем пазы
+        for groove in self.panel_data['grooves']:
+            panel['grooves'].append(groove.to_dict())
+
+        return panel
