@@ -1,0 +1,34 @@
+{
+  "dimensions": {
+    "width": 465.0,
+    "height": 568.6,
+    "thickness": 18.0
+  },
+  "grain_direction": {
+    "x": 0,
+    "y": 1
+  },
+  "origin_point": {
+    "x": -465.0,
+    "y": 0.0
+  },
+  "holes": [
+    {
+      "center": {
+        "x": 434.7,
+        "y": 31.86
+      },
+      "diameter": 5.0,
+      "depth": 8.0
+    },
+    {
+      "center": {
+        "x": 52.23,
+        "y": 497.31
+      },
+      "diameter": 8.0,
+      "depth": "through"
+    }
+  ],
+  "grooves": []
+}
